@@ -167,6 +167,9 @@ export function buildMessagesRequest(input: MessagesRequestInput): Json {
   }
   if (pending.size > 0) throw new LlmError('Command Code Messages history ends with unresolved tools', 'INVALID_REQUEST')
 
+  if (messages.length === 0) {
+    throw new LlmError('Command Code Messages needs at least one conversation message', 'INVALID_REQUEST')
+  }
   const thinking = input.withoutThinking
     ? {}
     : thinkingFields(input.thinking, input.effort, maxTokens)
@@ -180,7 +183,9 @@ export function buildMessagesRequest(input: MessagesRequestInput): Json {
     ...systemText.length === 0 ? {} : { system: systemText },
     // Extended thinking requires the provider default temperature.
     ...input.options.temperature === undefined || thinkingEnabled ? {} : { temperature: input.options.temperature },
-    ...input.options.stop === undefined ? {} : { stop_sequences: input.options.stop },
+    ...input.options.stop === undefined || input.options.stop.length === 0
+      ? {}
+      : { stop_sequences: input.options.stop },
     ...thinking,
     ...input.options.tools === undefined || input.options.tools.length === 0 ? {} : {
       tools: input.options.tools.map((tool) => ({

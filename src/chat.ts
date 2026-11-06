@@ -128,7 +128,10 @@ export function buildChatRequest(input: ChatRequestInput): Json {
         role: 'assistant',
         content: text.length === 0 ? null : text,
         ...toolCalls.length === 0 ? {} : { tool_calls: toolCalls },
-        ...!input.reasoningBack || reasoning.length === 0 ? {} : { reasoning_content: reasoning },
+        // A model that requires reasoning back refuses a turn with an empty
+        // slot, so a turn another model made (or one whose thinking was not
+        // kept) carries a period: present, and saying nothing.
+        ...!input.reasoningBack ? {} : { reasoning_content: reasoning.length === 0 ? '.' : reasoning },
       })
       continue
     }
@@ -137,6 +140,9 @@ export function buildChatRequest(input: ChatRequestInput): Json {
     messages.push({ role: 'user', content: body })
   }
 
+  if (messages.length === 0) {
+    throw new LlmError('Command Code Chat Completions needs at least one conversation message', 'INVALID_REQUEST')
+  }
   const systemText = system.filter((part) => part.length > 0).join('\n\n')
   return {
     model: model.id,
@@ -148,7 +154,7 @@ export function buildChatRequest(input: ChatRequestInput): Json {
     ],
     max_tokens: options.maxTokens ?? model.maxTokens ?? input.maxTokens,
     ...options.temperature === undefined ? {} : { temperature: options.temperature },
-    ...options.stop === undefined ? {} : { stop: options.stop },
+    ...options.stop === undefined || options.stop.length === 0 ? {} : { stop: options.stop },
     ...input.effort === undefined ? {} : { reasoning_effort: input.effort },
     ...options.tools === undefined || options.tools.length === 0 ? {} : {
       tools: options.tools.map((tool) => ({

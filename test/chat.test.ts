@@ -117,6 +117,23 @@ describe('buildChatRequest', () => {
       reasoningBack: false, maxTokens: 64_000,
     })
     expect((body.messages as Record<string, unknown>[])[0]).toEqual({ role: 'assistant', content: 'visible' })
+    const replayed = buildChatRequest({
+      options: request({ messages: [assistant] }), model: gpt, images: new Map(), effort: undefined,
+      reasoningBack: true, maxTokens: 64_000,
+    })
+    expect((replayed.messages as Record<string, unknown>[])[0]).toMatchObject({ reasoning_content: 'secret' })
+  })
+
+  test('fills a reasoning slot a required model would otherwise reject', () => {
+    const assistant = createAssistantMessage({
+      content: [{ type: 'text', text: 'from another model' }],
+      source: { provider: 'commandcode', model: gpt.id },
+    })
+    const body = buildChatRequest({
+      options: request({ messages: [assistant] }), model: gpt, images: new Map(), effort: undefined,
+      reasoningBack: true, maxTokens: 64_000,
+    })
+    expect((body.messages as Record<string, unknown>[])[0]).toMatchObject({ reasoning_content: '.' })
   })
 
   test('sends images as data URLs for a vision model and as text otherwise', () => {
@@ -157,6 +174,17 @@ describe('buildChatRequest', () => {
     expect(JSON.stringify(googleParameters)).not.toContain('$ref')
     const other = ((build(gpt).tools as Record<string, unknown>[])[0] as { function: { parameters: unknown } }).function.parameters
     expect(other).toBe(parameters)
+  })
+
+  test('omits an empty stop list and refuses a message-less request', () => {
+    const body = buildChatRequest({
+      options: request({ stop: [] }), model: gpt, images: new Map(), effort: undefined, reasoningBack: false, maxTokens: 64_000,
+    })
+    expect(body).not.toHaveProperty('stop')
+    expect(() => buildChatRequest({
+      options: request({ messages: [{ role: 'user', content: [] }] }),
+      model: gpt, images: new Map(), effort: undefined, reasoningBack: false, maxTokens: 64_000,
+    })).toThrow(/at least one conversation message/u)
   })
 
   test('refuses a content block the wire cannot carry', () => {
