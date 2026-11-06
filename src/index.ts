@@ -5,7 +5,7 @@
  * Claude models on the Anthropic Messages wire, every other model on Chat
  * Completions, with live model discovery, the bundled fallback catalog, and
  * zero-config reuse of the command-code CLI's own sign-in.
- * @module dsh-commandcode
+ * @module dsh-provider-commandcode
  */
 
 import { homedir } from 'node:os'
@@ -19,8 +19,8 @@ import { CatalogCache, buildCatalog, fallbackCatalog, fetchModels } from './cata
 import type { CatalogModel, ModelOverride } from './catalog-types.js'
 import { resolveConnection } from './config.js'
 import type { Config, Connection } from './config.js'
-import { authFilePaths, describeSource, resolveApiKey } from './credentials.js'
-import type { CredentialService } from './credentials.js'
+import { authFilePaths, describeSource, resolveApiKey, resolveApiKeyCandidates } from './credentials.js'
+import type { CredentialService, ResolveKeyOptions, ResolvedKey } from './credentials.js'
 
 export { Config } from './config.js'
 export type { Config as CommandCodeConfig, Connection, ThinkingMode, ReasoningBack } from './config.js'
@@ -40,9 +40,50 @@ export const inject = ['llm']
 /** Diagnostic sink: listing failures never fail a model request. */
 const DISCOVERY_WARN = (message: string): void => { console.warn(`[llm-commandcode] ${message}`) }
 
+/**
+ * One credential choice per process. A key the provider refuses is retired and
+ * the next configured source is tried, so a stale CLI sign-in cannot shadow a
+ * still-valid host credential.
+ */
+class KeySelector {
+  private preferred: ResolvedKey | undefined
+  private readonly refused = new Set<string>()
+
+  constructor(private readonly sources: (connection: Connection) => ResolveKeyOptions) {}
+
+  /** The key this process currently prefers, once one was resolved. */
+  peek(): ResolvedKey | undefined {
+    return this.preferred
+  }
+
+  /** The next candidate no refusal has retired, resolved lazily and then reused. */
+  async resolve(connection: Connection): Promise<ResolvedKey | undefined> {
+    if (this.preferred !== undefined) return this.preferred
+    const candidates = await resolveApiKeyCandidates(this.sources(connection))
+    this.preferred = candidates.find((candidate) => !this.refused.has(candidate.key))
+    return this.preferred
+  }
+
+  /**
+   * Retire one refused key and move to the next candidate, if any.
+   *
+   * Two model calls may be in flight at once (a conversation step and a title,
+   * for example), so a refusal of the key another call already replaced returns
+   * the current preference instead of clearing it: the newer choice is strictly
+   * better information than this call's older one.
+   */
+  async reject(connection: Connection, key: string): Promise<ResolvedKey | undefined> {
+    this.refused.add(key)
+    if (this.preferred !== undefined && this.preferred.key !== key) return this.preferred
+    this.preferred = undefined
+    return await this.resolve(connection)
+  }
+}
+
 interface PluginState {
   readonly cache: CatalogCache
   readonly options: () => Connection
+  readonly keys: KeySelector
   /** Whether network discovery is enabled for this deployment. */
   readonly discovery: boolean
 }
@@ -84,6 +125,14 @@ export function apply(ctx: Context, config: Config): void {
     const models = config.discovery === false ? fallbackCatalog(overrides) : cache.current().models
     return resolveConnection(config, models, process.cwd())
   }
+  const keySources = (connection: Connection): ResolveKeyOptions => ({
+    ref: connection.apiKeyEnv,
+    ...connection.authFile === undefined ? {} : { authFile: connection.authFile },
+    credentials: credentials(ctx),
+    env: process.env,
+    home: homedir(),
+  })
+  const keys = new KeySelector(keySources)
   const listing = async (signal?: AbortSignal): Promise<readonly CatalogModel[]> => {
     if (config.discovery === false) return fallbackCatalog(overrides)
     return (await cache.view(signal)).models
@@ -91,13 +140,8 @@ export function apply(ctx: Context, config: Config): void {
   const adapterOptions: CommandCodeAdapterOptions = {
     options,
     connect: async (signal) => resolveConnection(config, await listing(signal), process.cwd()),
-    resolveKey: async (connection) => await resolveApiKey({
-      ref: connection.apiKeyEnv,
-      ...connection.authFile === undefined ? {} : { authFile: connection.authFile },
-      credentials: credentials(ctx),
-      env: process.env,
-      home: homedir(),
-    }),
+    resolveKey: async (connection) => await keys.resolve(connection),
+    ...config.keyFallback === false ? {} : { rejectKey: async (connection, key) => await keys.reject(connection, key) },
     discoverModels: async () => (await listing()).map((model) => catalogInfo(PROVIDER, model)),
     resolveAttachments: () => ctx.get('attachments'),
     resolveImageAccess: (attachments, ref) => resolveImageAccess(ctx, attachments, ref),
@@ -108,7 +152,7 @@ export function apply(ctx: Context, config: Config): void {
   // fails the plugin instead of the first prompt.
   options()
   ctx.effect(() => () => { lifecycle.abort() })
-  registerCommands(ctx, { cache, options, discovery: config.discovery !== false })
+  registerCommands(ctx, { cache, options, keys, discovery: config.discovery !== false })
 }
 
 /** Read the mounted credentials service, when the composition has one. */
@@ -193,10 +237,12 @@ async function statusResult(ctx: Context, state: PluginState): Promise<CommandRe
     : { models: connection.models, source: 'static' as const }
   let auth = 'not configured (run `command-code` to sign in, or set COMMANDCODE_API_KEY)'
   try {
-    const key = await resolveApiKey({
+    const key = state.keys.peek() ?? await resolveApiKey({
       ref: connection.apiKeyEnv,
       ...connection.authFile === undefined ? {} : { authFile: connection.authFile },
       credentials: credentials(ctx),
+      env: process.env,
+      home: homedir(),
     })
     if (key !== undefined) auth = describeSource(key.source)
   } catch (error) {

@@ -1,4 +1,4 @@
-# dsh-commandcode
+# dsh-provider-commandcode
 
 **DeepSeek Harness**（`dsh`）的 Command Code（[commandcode.ai](https://commandcode.ai)）provider 插件。
 
@@ -15,13 +15,13 @@
 
 ```sh
 # npm（发布后）
-dsh plugin --profile web add dsh-commandcode
+dsh plugin --profile web add dsh-provider-commandcode
 
 # 本地 checkout
-dsh plugin --profile web add /path/to/dsh-commandcode
+dsh plugin --profile web add /path/to/dsh-provider-commandcode
 
 # git（pnpm 会先要求允许该包的构建脚本）
-dsh plugin --profile web add github:abcdlsj/dsh-commandcode
+dsh plugin --profile web add github:abcdlsj/dsh-provider-commandcode
 ```
 
 随后 `dsh web`（或 `dsh tui`、`dsh headless "任务"`）。插件行为 `llm-commandcode`，可在 profile 的 `cordis.patch.yml` 里覆盖其 `config`。
@@ -38,6 +38,8 @@ dsh plugin --profile web add github:abcdlsj/dsh-commandcode
 所以已经在用 `command-code` CLI 的用户无需任何配置。headless profile 会禁用 credentials 服务，这正是 CLI 登录兜底存在的原因。
 
 不可用的值（空白，或 HTTP header 无法承载的字符）会以 `INVALID_CREDENTIAL` 报出需要修改的设置项，绝不回显 key。
+
+**跨来源回退。** provider 对当前 key 返回 `401` 时，插件弃用它并尝试下一个来源（`keyFallback: false` 可关闭）。因此过期的 `command-code` CLI 登录会让位给仍然有效的 `~/.pi/agent/auth.json` 凭据，而不是让请求失败。最多尝试 5 个不同 key，绝不重复，并记录一条标明两个来源的告警。
 
 ## 选择模型
 
@@ -59,6 +61,7 @@ dsh plugin --profile web add github:abcdlsj/dsh-commandcode
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
 | `apiKeyEnv` | `COMMANDCODE_API_KEY` | 凭据引用，同时是环境变量名。 |
+| `keyFallback` | `true` | 遇到 `401` 时弃用该 key，尝试下一个来源。 |
 | `authFile` | — | 显式 command-code `auth.json` 路径，优先于默认文件。 |
 | `baseURL` | `https://api.commandcode.ai/provider/v1` | Provider API 根地址。 |
 | `modelsURL` | `<baseURL>/models` | 模型列表端点。 |
@@ -82,7 +85,7 @@ dsh plugin --profile web add github:abcdlsj/dsh-commandcode
 
 ```yaml
 - id: llm-commandcode
-  name: dsh-commandcode
+  name: dsh-provider-commandcode
   config:
     models:
       - id: acme/next-model
@@ -111,6 +114,13 @@ dsh plugin --profile web add github:abcdlsj/dsh-commandcode
 - **图片走 harness attachment 服务**，每个请求只重新编码一次；超出预算时报 `IMAGE_OFFLOAD_REQUIRED`，不静默丢弃。
 - **每个请求都带 harness 归因头**（`user-agent: deepseek-harness/…`），外加 CLI 自己的 `x-command-code-version`、`x-cli-environment`、`x-project-slug`、`x-taste-learning`、`x-session-id`。
 
+## 设计边界
+
+- **只用 Provider API。** 插件绝不调用 CLI 的 `/alpha/generate`：那是官方客户端的接口，不是文档化的 API，用它等于绕过 Provider API 权限。`403 upgrade_required` 如实上报，不做规避。
+- **只实现 Chat Completions 与 Messages。** 同时声明 `/responses` 的模型走 `/chat/completions`（它们全都支持）；Responses 线路未实现。
+- **没有 Files API，也不回放 thinking 签名。** 图片内联发送；历史 thinking 在 Messages 线上一律不发。
+- **单一路由。** `commandcode` 固定；网关或镜像通过 `baseURL`/`modelsURL` 接入，而不是新增路由。
+
 ## 排错
 
 | 现象 | 原因与处理 |
@@ -132,6 +142,13 @@ npm run build
 ```
 
 模块划分：`config.ts`（schema 与连接）、`catalog.ts`（发现、兜底、覆盖）、`credentials.ts`、`adapter.ts`（传输、请求头、降级）、`chat.ts`/`messages.ts`（线路序列化与 SSE 翻译）、`sse.ts`、`errors.ts`、`images.ts`、`google-schema.ts`、`static-catalog.ts`。
+
+### 已实测
+
+- 真实端点 `GET /provider/v1/models` 发现：95 个模型，11 个 Claude 走 Messages，84 个走 Chat Completions，84 个支持图片。
+- GOAT 套餐下经由 Chat Completions 的完整 `dsh headless` 工具调用回路（`deepseek/deepseek-v4-flash`，effort `high`）：reasoning 增量、`bash` 工具调用、工具结果与最终回答。
+- 跨来源凭据回退：过期的 `~/.commandcode/auth.json` 在一次 `401` 后让位给仍然有效的 `~/.pi/agent/auth.json`，提示不失败。
+- Messages 线路由协议级测试覆盖。GOAT 套餐的 Provider API 权限不含 Claude（`403 MODEL_NOT_IN_PLAN` 由 Command Code 返回），真实 Claude 请求需要 Provider 及以上套餐的 key。
 
 ## 致谢
 

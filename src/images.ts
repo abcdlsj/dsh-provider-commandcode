@@ -4,7 +4,7 @@
  * Every retained image is re-encoded to the route's byte target once, and the
  * request fails with `IMAGE_OFFLOAD_REQUIRED` instead of silently dropping
  * occurrences, so the harness's own offload policy owns what gets removed.
- * @module dsh-commandcode/images
+ * @module dsh-provider-commandcode/images
  */
 
 import {

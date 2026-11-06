@@ -1,5 +1,5 @@
 {
-  "name": "dsh-commandcode",
+  "name": "dsh-provider-commandcode",
   "version": "0.1.0",
   "description": "Command Code (commandcode.ai) provider plugin for DeepSeek Harness: Claude on Messages, every other model on Chat Completions, with live model discovery and zero-config reuse of the command-code CLI sign-in",
   "type": "module",
@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abcdlsj/dsh-commandcode.git"
+    "url": "git+https://github.com/abcdlsj/dsh-provider-commandcode.git"
   },
   "dsh": {
     "bundle": {

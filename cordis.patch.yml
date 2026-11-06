@@ -1,4 +1,4 @@
-# The dsh-commandcode bundle layer: one provider row, no inlined secrets.
+# The dsh-provider-commandcode bundle layer: one provider row, no inlined secrets.
 #
 # The API key resolves per request: the credentials service value for
 # `apiKeyEnv` (default COMMANDCODE_API_KEY), then that variable in the launch
@@ -7,4 +7,4 @@
 # select `commandcode` from the model picker.
 - insert:
     - id: llm-commandcode
-      name: 'dsh-commandcode'
+      name: 'dsh-provider-commandcode'

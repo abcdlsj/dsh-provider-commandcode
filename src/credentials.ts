@@ -1,7 +1,7 @@
 /**
  * Command Code credential resolution: the harness credential store first,
  * then the launch environment, then the command-code CLI's own sign-in.
- * @module dsh-commandcode/credentials
+ * @module dsh-provider-commandcode/credentials
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -83,6 +83,36 @@ export function authFilePaths(home: string, env: NodeJS.ProcessEnv = process.env
 }
 
 /**
+ * Read every usable key out of an ordered list of auth files, without repeats.
+ * @param paths - absolute candidate paths, most authoritative first.
+ * @param read - file reader, for tests.
+ * @param exists - existence probe, for tests.
+ * @returns one key per file that holds one, in candidate order.
+ */
+export function readKeysFromFiles(
+  paths: readonly string[],
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+  exists: (path: string) => boolean = existsSync,
+): ResolvedKey[] {
+  const keys: ResolvedKey[] = []
+  const seen = new Set<string>()
+  for (const path of paths) {
+    if (!exists(path)) continue
+    let body: unknown
+    try {
+      body = JSON.parse(read(path))
+    } catch (_malformedAuthFile) {
+      continue
+    }
+    const key = keyFromAuthFile(body)
+    if (key === undefined || seen.has(key)) continue
+    seen.add(key)
+    keys.push({ key, source: { kind: 'file', path } })
+  }
+  return keys
+}
+
+/**
  * Read the first usable key out of an ordered list of auth files.
  * @param paths - absolute candidate paths, most authoritative first.
  * @param read - file reader, for tests.
@@ -94,18 +124,7 @@ export function readKeyFromFiles(
   read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
   exists: (path: string) => boolean = existsSync,
 ): ResolvedKey | undefined {
-  for (const path of paths) {
-    if (!exists(path)) continue
-    let body: unknown
-    try {
-      body = JSON.parse(read(path))
-    } catch (_malformedAuthFile) {
-      continue
-    }
-    const key = keyFromAuthFile(body)
-    if (key !== undefined) return { key, source: { kind: 'file', path } }
-  }
-  return undefined
+  return readKeysFromFiles(paths, read, exists)[0]
 }
 
 /** Everything one key lookup may consult. */
@@ -127,7 +146,7 @@ export interface ResolveKeyOptions {
 }
 
 /**
- * Resolve the API key for one request.
+ * Resolve every distinct API key one request may try, in precedence order.
  *
  * Precedence: the credentials service value for the configured reference, the
  * configured reference in the environment, the ambient Command Code variables,
@@ -135,34 +154,54 @@ export interface ResolveKeyOptions {
  * that the credentials service stores stays authoritative when configured,
  * while an unset reference deliberately falls through to the CLI sign-in, which
  * is what makes the plugin zero-config for existing CLI users.
+ *
+ * Listing every candidate — instead of only the first — is what lets a stale
+ * CLI sign-in yield to a still-valid host credential after one 401, rather than
+ * failing a request the machine can already authenticate.
  * @param options - reference, mounts, environment, and file probes.
- * @returns the usable key and its origin, or `undefined` when none is configured.
+ * @returns usable keys and their origins, most authoritative first.
  * @throws LlmError `INVALID_CREDENTIAL` when a value cannot be an HTTP header.
  */
-export async function resolveApiKey(options: ResolveKeyOptions): Promise<ResolvedKey | undefined> {
+export async function resolveApiKeyCandidates(options: ResolveKeyOptions): Promise<ResolvedKey[]> {
   const env = options.env ?? process.env
   const ref = options.ref
+  const candidates: ResolvedKey[] = []
+  const seen = new Set<string>()
+  const add = (key: string, source: KeySource): void => {
+    if (seen.has(key)) return
+    seen.add(key)
+    candidates.push({ key, source })
+  }
   const credentials = options.credentials
   if (credentials !== undefined) {
     const hit = await credentials.resolve(ref)
     if (hit !== undefined && hit.value.trim().length > 0) {
-      return { key: assertUsableApiKey(hit.value, 'dsh-commandcode', ref), source: { kind: 'credentials', ref } }
+      add(assertUsableApiKey(hit.value, 'dsh-provider-commandcode', ref), { kind: 'credentials', ref })
     }
   }
   for (const name of [ref, ...AMBIENT_KEY_VARS]) {
     const value = env[name]
-    if (value !== undefined && value.trim().length > 0) {
-      return { key: assertUsableApiKey(value, 'dsh-commandcode', name), source: { kind: 'env', name } }
-    }
+    if (value === undefined || value.trim().length === 0) continue
+    add(assertUsableApiKey(value, 'dsh-provider-commandcode', name), { kind: 'env', name })
   }
   const paths = [
     ...options.authFile === undefined ? [] : [options.authFile],
     ...authFilePaths(options.home ?? homedir(), env),
   ]
-  const found = readKeyFromFiles(paths, options.read, options.exists)
-  if (found === undefined) return undefined
-  const origin = found.source.kind === 'file' ? found.source.path : ref
-  return { key: assertUsableApiKey(found.key, 'dsh-commandcode', origin), source: found.source }
+  for (const found of readKeysFromFiles(paths, options.read, options.exists)) {
+    const origin = found.source.kind === 'file' ? found.source.path : ref
+    add(assertUsableApiKey(found.key, 'dsh-provider-commandcode', origin), found.source)
+  }
+  return candidates
+}
+
+/**
+ * Resolve the API key one request should try first.
+ * @param options - reference, mounts, environment, and file probes.
+ * @returns the most authoritative usable key, or `undefined` when none is configured.
+ */
+export async function resolveApiKey(options: ResolveKeyOptions): Promise<ResolvedKey | undefined> {
+  return (await resolveApiKeyCandidates(options))[0]
 }
 
 /** Human-readable origin for diagnostics. */

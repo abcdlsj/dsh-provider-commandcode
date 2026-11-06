@@ -1,7 +1,7 @@
 /**
  * Command Code model discovery: live `/provider/v1/models`, the bundled
  * fallback snapshot, and deployment overrides merged into one catalog.
- * @module dsh-commandcode/catalog
+ * @module dsh-provider-commandcode/catalog
  */
 
 import { STATIC_MODELS } from './static-catalog.js'

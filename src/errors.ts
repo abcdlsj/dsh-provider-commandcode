@@ -1,7 +1,7 @@
 /**
  * Normalize Command Code HTTP, in-band, and transport failures into stable
  * harness failure codes.
- * @module dsh-commandcode/errors
+ * @module dsh-provider-commandcode/errors
  */
 
 import {

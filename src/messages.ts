@@ -1,7 +1,7 @@
 /**
  * Anthropic Messages wire: request serialization and SSE translation for the
  * Claude models Command Code serves on `/messages`.
- * @module dsh-commandcode/messages
+ * @module dsh-provider-commandcode/messages
  */
 
 import { LlmError, ToolCallId, textOnlyImageText } from '@deepseek-ai/dsh-llm'

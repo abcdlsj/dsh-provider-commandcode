@@ -1,4 +1,4 @@
-# dsh-commandcode
+# dsh-provider-commandcode
 
 Command Code ([commandcode.ai](https://commandcode.ai)) provider plugin for **DeepSeek Harness** (`dsh`).
 
@@ -15,13 +15,13 @@ Unofficial community plugin. Not affiliated with or endorsed by Command Code or 
 
 ```sh
 # From npm (once published)
-dsh plugin --profile web add dsh-commandcode
+dsh plugin --profile web add dsh-provider-commandcode
 
 # From this checkout
-dsh plugin --profile web add /path/to/dsh-commandcode
+dsh plugin --profile web add /path/to/dsh-provider-commandcode
 
 # From git (pnpm asks you to allow the package's build script first)
-dsh plugin --profile web add github:abcdlsj/dsh-commandcode
+dsh plugin --profile web add github:abcdlsj/dsh-provider-commandcode
 ```
 
 Then boot: `dsh web` (or `dsh tui`, `dsh headless "task"`). The row is `llm-commandcode`; the profile's `cordis.patch.yml` can override its `config`.
@@ -38,6 +38,8 @@ The key is resolved per request, first match wins:
 So if you already use the `command-code` CLI, there is nothing to configure: the plugin reuses that key. Headless profiles disable the credentials service, which is exactly why the CLI sign-in fallback exists.
 
 An unusable value (blank, or characters no HTTP header can carry) fails as `INVALID_CREDENTIAL` naming the setting to fix, never echoing the key.
+
+**Cross-source fallback.** When the provider answers `401` for the key this process chose, the plugin retires that key and tries the next source (`keyFallback: false` disables it). That is what makes a stale `command-code` CLI sign-in yield to a still-valid `~/.pi/agent/auth.json` credential instead of failing the prompt. It retries at most five distinct keys, never the same one twice, and logs one warning naming the two sources.
 
 ## Select a model
 
@@ -60,6 +62,7 @@ All fields are optional. Defaults work with no configuration.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `apiKeyEnv` | `COMMANDCODE_API_KEY` | Credential reference, also the environment variable name. |
+| `keyFallback` | `true` | On a `401`, retire the refused key and try the next configured source. |
 | `authFile` | — | Explicit command-code `auth.json` path, tried before the defaults. |
 | `baseURL` | `https://api.commandcode.ai/provider/v1` | Provider API root. |
 | `modelsURL` | `<baseURL>/models` | Model listing endpoint. |
@@ -83,7 +86,7 @@ Per-model overrides add a model the listing omits, or correct its capabilities:
 
 ```yaml
 - id: llm-commandcode
-  name: dsh-commandcode
+  name: dsh-provider-commandcode
   config:
     models:
       - id: acme/next-model
@@ -112,6 +115,13 @@ Per-model overrides add a model the listing omits, or correct its capabilities:
 - **Images go through the harness attachment service**, are re-encoded once per request, and fail with `IMAGE_OFFLOAD_REQUIRED` instead of being dropped silently when the request exceeds its budget.
 - **Every request carries the harness attribution header** (`user-agent: deepseek-harness/…`) plus the CLI's own `x-command-code-version`, `x-cli-environment`, `x-project-slug`, `x-taste-learning`, and `x-session-id`.
 
+## Design boundaries
+
+- **Provider API only.** The plugin never calls the CLI's `/alpha/generate` endpoint: that surface is the official client's, not a documented API, and using it would route around Provider API entitlement. A `403 upgrade_required` is reported, not evaded.
+- **Chat Completions and Messages only.** Models that also advertise `/responses` are served on `/chat/completions`, which every one of them accepts; the Responses wire is not implemented.
+- **No Files API and no thinking-signature replay.** Images are sent inline; earlier thinking is never replayed on the Messages wire.
+- **One route.** `commandcode` is fixed; a gateway or mirror is reached through `baseURL`/`modelsURL`, not a second route.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -133,6 +143,13 @@ npm run build
 ```
 
 Layout: `config.ts` (schema + connection), `catalog.ts` (discovery, fallback, overrides), `credentials.ts`, `adapter.ts` (transport, headers, downgrades), `chat.ts`/`messages.ts` (wire serialization + SSE translation), `sse.ts`, `errors.ts`, `images.ts`, `google-schema.ts`, `static-catalog.ts`.
+
+### What was verified live
+
+- `GET /provider/v1/models` discovery against the real endpoint: 95 models, 11 Claude on Messages, 84 on Chat Completions, 84 image-capable.
+- A full `dsh headless` tool-call round trip on a GOAT plan through Chat Completions (`deepseek/deepseek-v4-flash`, effort `high`): reasoning deltas, a `bash` tool call, its result, and the final answer.
+- Cross-source credential fallback: a stale `~/.commandcode/auth.json` key yielded to the still-valid `~/.pi/agent/auth.json` key after one `401`, without failing the prompt.
+- The Messages wire is covered by protocol-level tests. A GOAT plan's Provider API allowance excludes Claude (`403 MODEL_NOT_IN_PLAN` comes from Command Code itself), so a live Claude request needs a Provider-or-higher key.
 
 ## Attribution
 

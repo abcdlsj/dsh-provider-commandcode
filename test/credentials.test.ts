@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
-import { authFilePaths, describeSource, keyFromAuthFile, readKeyFromFiles, resolveApiKey } from '../src/credentials.js'
+import {
+  authFilePaths, describeSource, keyFromAuthFile, readKeyFromFiles, resolveApiKey, resolveApiKeyCandidates,
+} from '../src/credentials.js'
 
 describe('keyFromAuthFile', () => {
   test('reads the CLI body', () => {
@@ -102,5 +104,39 @@ describe('resolveApiKey', () => {
     expect(describeSource({ kind: 'credentials', ref: 'R' })).toBe('credentials service (R)')
     expect(describeSource({ kind: 'env', name: 'R' })).toBe('environment variable R')
     expect(describeSource({ kind: 'file', path: '/x' })).toBe('auth file /x')
+  })
+})
+
+describe('resolveApiKeyCandidates', () => {
+  test('lists every distinct source in precedence order', async () => {
+    const found = await resolveApiKeyCandidates({
+      ref: 'COMMANDCODE_API_KEY',
+      credentials: { resolve: vi.fn(async () => ({ value: 'user_store' })) },
+      env: { COMMANDCODE_API_KEY: 'user_env', COMMAND_CODE_API_KEY: 'user_ambient' },
+      home: '/home/me',
+      exists: (path) => path === '/home/me/.commandcode/auth.json' || path === '/home/me/.pi/agent/auth.json',
+      read: (path) => path.includes('.commandcode')
+        ? JSON.stringify({ apiKey: 'user_cli' })
+        : JSON.stringify({ commandcode: { type: 'oauth', access: 'user_pi' } }),
+    })
+    expect(found.map((candidate) => [candidate.key, candidate.source.kind])).toEqual([
+      ['user_store', 'credentials'],
+      ['user_env', 'env'],
+      ['user_ambient', 'env'],
+      ['user_cli', 'file'],
+      ['user_pi', 'file'],
+    ])
+  })
+
+  test('drops a repeated key while keeping its most authoritative origin', async () => {
+    const found = await resolveApiKeyCandidates({
+      ref: 'COMMANDCODE_API_KEY',
+      env: { COMMANDCODE_API_KEY: 'same_key' },
+      home: '/home/me',
+      exists: (path) => path === '/home/me/.commandcode/auth.json',
+      read: () => JSON.stringify({ apiKey: 'same_key' }),
+    })
+    expect(found).toHaveLength(1)
+    expect(found[0]?.source).toEqual({ kind: 'env', name: 'COMMANDCODE_API_KEY' })
   })
 })

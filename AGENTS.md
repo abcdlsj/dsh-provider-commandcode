@@ -1,6 +1,6 @@
 # Repository notes
 
-`dsh-commandcode` is an out-of-tree DeepSeek Harness provider plugin. It ships a
+`dsh-provider-commandcode` is an out-of-tree DeepSeek Harness provider plugin. It ships a
 built `lib/` and a `cordis.patch.yml` bundle layer.
 
 ## Ground rules

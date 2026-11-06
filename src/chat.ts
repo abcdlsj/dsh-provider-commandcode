@@ -1,7 +1,7 @@
 /**
  * OpenRouter-style Chat Completions wire: request serialization and SSE
  * translation for every non-Claude Command Code model.
- * @module dsh-commandcode/chat
+ * @module dsh-provider-commandcode/chat
  */
 
 import { LlmError, ToolCallId, textOnlyImageText } from '@deepseek-ai/dsh-llm'
@@ -195,24 +195,33 @@ function nonNegativeInteger(value: unknown, field: string): number {
   return value as number
 }
 
+function number(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
 function usageOf(raw: unknown): TokenUsage {
   const fields = record(raw)
-  const prompt = typeof fields.prompt_tokens === 'number' ? fields.prompt_tokens : 0
-  const completion = typeof fields.completion_tokens === 'number' ? fields.completion_tokens : 0
+  const prompt = number(fields.prompt_tokens)
+  const completion = number(fields.completion_tokens)
   const details = typeof fields.prompt_tokens_details === 'object' && fields.prompt_tokens_details !== null
     ? fields.prompt_tokens_details as Json
     : {}
   const completionDetails = typeof fields.completion_tokens_details === 'object' && fields.completion_tokens_details !== null
     ? fields.completion_tokens_details as Json
-    : {}
-  const cached = typeof details.cached_tokens === 'number' ? details.cached_tokens : 0
-  const reasoning = typeof completionDetails.reasoning_tokens === 'number' ? completionDetails.reasoning_tokens : 0
+    : undefined
+  // Command Code reports cache hits under `cached_tokens` and also mirrors the
+  // Anthropic-shaped counters, so either spelling of a cache read counts once.
+  const cached = number(details.cached_tokens) || number(details.cache_read_input_tokens)
+  const cacheWrite = number(details.cache_creation_input_tokens) || number(details.cache_write_tokens)
+  const reasoning = completionDetails === undefined ? 0 : number(completionDetails.reasoning_tokens)
   const total = typeof fields.total_tokens === 'number' ? fields.total_tokens : prompt + completion
+  const billedPrompt = prompt - cached
   return {
-    inputTokens: Math.max(0, prompt - cached),
+    inputTokens: Math.max(0, billedPrompt),
     outputTokens: completion,
     totalTokens: total,
     ...cached === 0 ? {} : { cacheReadTokens: cached },
+    ...cacheWrite === 0 ? {} : { cacheWriteTokens: cacheWrite },
     ...reasoning === 0 ? {} : { reasoningTokens: reasoning },
   }
 }

@@ -6,7 +6,7 @@
  * framing, so this module implements the parts of the SSE grammar provider
  * streams actually use: `data` and `event` fields, multi-line data, comments as
  * heartbeats, CRLF or LF line endings, and a discarded unterminated tail.
- * @module dsh-commandcode/sse
+ * @module dsh-provider-commandcode/sse
  */
 
 /** One dispatched SSE frame. */

@@ -224,6 +224,25 @@ describe('translateChat', () => {
     })
   })
 
+  test('reads either cache-counter spelling once', async () => {
+    const chunks = await collect([
+      chunk({ content: 'x' }),
+      chunk({}, 'stop'),
+      {
+        choices: [],
+        usage: {
+          prompt_tokens: 50,
+          completion_tokens: 4,
+          prompt_tokens_details: { cached_tokens: 0, cache_read_input_tokens: 30, cache_creation_input_tokens: 6 },
+        },
+      },
+    ])
+    expect(chunks.at(-2)).toEqual({
+      type: 'usage',
+      usage: { inputTokens: 20, outputTokens: 4, totalTokens: 54, cacheReadTokens: 30, cacheWriteTokens: 6 },
+    })
+  })
+
   test('assembles a fragmented tool call', async () => {
     const chunks = await collect([
       chunk({ tool_calls: [{ index: 0, id: 'call_9', type: 'function', function: { name: 'bash', arguments: '{"comm' } }] }),

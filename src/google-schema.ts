@@ -6,7 +6,7 @@
  * rejected, so those are written out for a Google model while the accepted
  * ones go as they came. Only Google routes are rewritten. Adapted from
  * magpie-community's Command Code plugin (MIT).
- * @module dsh-commandcode/google-schema
+ * @module dsh-provider-commandcode/google-schema
  */
 
 const DEFINITION_REF = /^#\/(?:\$defs|definitions)\/[^/]+$/u

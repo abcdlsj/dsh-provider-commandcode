@@ -1,7 +1,7 @@
 /**
  * Command Code provider adapter: one class over the two wires the Provider API
  * serves, with per-model downgrades learned from the provider's own refusals.
- * @module dsh-commandcode/adapter
+ * @module dsh-provider-commandcode/adapter
  */
 
 import { attributionHeaders, LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -16,6 +16,7 @@ import type { CatalogModel } from './catalog-types.js'
 import { buildChatRequest, translateChat } from './chat.js'
 import type { Connection } from './config.js'
 import type { ResolvedKey } from './credentials.js'
+import { describeSource } from './credentials.js'
 import { emptyResponse, providerError, rejectsField, transportError } from './errors.js'
 import { prepareImages } from './images.js'
 import { buildMessagesRequest, translateMessages } from './messages.js'
@@ -23,6 +24,9 @@ import { parseSse } from './sse.js'
 
 /** Idle-watchdog timeout code of one stream read. */
 const IDLE_CODE = 'COMMANDCODE_IDLE'
+
+/** Distinct credentials one request may try before it reports the refusal. */
+const MAX_KEY_ATTEMPTS = 5
 
 /** A 400 that says the Messages wire refused the thinking fields. */
 const THINKING_REFUSED = /thinking|output_config|budget_tokens/iu
@@ -38,8 +42,13 @@ export interface CommandCodeAdapterOptions {
   readonly options: () => Connection
   /** Resolve the connection for one catalog-driven lookup, after discovery settled. */
   readonly connect?: (signal?: AbortSignal) => Promise<Connection>
-  /** Resolve the API key for one request. */
+  /** Resolve the API key one request should try first. */
   readonly resolveKey: (connection: Connection) => Promise<ResolvedKey | undefined>
+  /**
+   * Mark one refused key unusable and return the next candidate, if any.
+   * Omission disables cross-source credential fallback.
+   */
+  readonly rejectKey?: (connection: Connection, key: string) => Promise<ResolvedKey | undefined>
   /** Discover catalog entries; a missing key still lets the public listing answer. */
   readonly discoverModels: (connection: Connection, signal?: AbortSignal) => Promise<readonly LlmModelInfo[]>
   /** Current durable attachment service; absence rejects image input. */
@@ -135,6 +144,8 @@ function readBody(text: string): unknown {
 /** Command Code provider over the Provider API's two supported wires. */
 export class CommandCodeAdapter extends LlmAdapter {
   private readonly downgrades = new Map<string, ModelDowngrades>()
+  /** Credential refusals already reported, so parallel calls warn once. */
+  private readonly reportedRefusals = new Set<string>()
 
   constructor(private readonly dependencies: CommandCodeAdapterOptions) {
     super()
@@ -218,19 +229,21 @@ export class CommandCodeAdapter extends LlmAdapter {
       maxImages: connection.maxImagesPerRequest,
       signal,
     })
-    const resolved = await this.dependencies.resolveKey(connection)
-    if (resolved === undefined) {
-      throw new LlmError(
-        `no Command Code API key: store ${connection.apiKeyEnv} through the credentials service,`
-        + ' export COMMANDCODE_API_KEY, or sign in with the command-code CLI',
-        'MISSING_CREDENTIAL',
-      )
-    }
     const flags = this.flag(model.id)
     const history = { ...options, messages: prepared.messages } as GenerateOptions<string>
     const effort = options.reasoningEffort === undefined ? undefined : String(options.reasoningEffort)
+    let keyAttempts = 0
+    let degraded = false
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    while (true) {
+      const resolved = await this.dependencies.resolveKey(connection)
+      if (resolved === undefined) {
+        throw new LlmError(
+          `no Command Code API key: store ${connection.apiKeyEnv} through the credentials service,`
+          + ' export COMMANDCODE_API_KEY, or sign in with the command-code CLI',
+          'MISSING_CREDENTIAL',
+        )
+      }
       const body = model.wire === 'messages'
         ? buildMessagesRequest({
           options: history,
@@ -259,7 +272,23 @@ export class CommandCodeAdapter extends LlmAdapter {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
         const raw = readBody(text)
-        if (attempt === 0 && this.degrade(model, flags, response.status, raw, effort)) continue
+        if (response.status === 401 && this.dependencies.rejectKey !== undefined && keyAttempts < MAX_KEY_ATTEMPTS) {
+          keyAttempts += 1
+          const next = await this.dependencies.rejectKey(connection, resolved.key)
+          if (next !== undefined) {
+            if (!this.reportedRefusals.has(resolved.key)) {
+              this.reportedRefusals.add(resolved.key)
+              this.dependencies.warn?.(
+                `dsh-provider-commandcode: ${describeSource(resolved.source)} was refused; trying ${describeSource(next.source)}`,
+              )
+            }
+            continue
+          }
+        }
+        if (!degraded && this.degrade(model, flags, response.status, raw, effort)) {
+          degraded = true
+          continue
+        }
         throw providerError(raw, response.status, response.headers)
       }
       if (response.body === null) throw emptyResponse()
@@ -269,7 +298,6 @@ export class CommandCodeAdapter extends LlmAdapter {
         : translateChat(events, { model: model.id })
       return
     }
-    throw new LlmError('Command Code request failed after a degraded retry', 'INVALID_REQUEST')
   }
 
   /** Learn one refusal this process can work around; `true` asks for one retry. */
@@ -284,17 +312,17 @@ export class CommandCodeAdapter extends LlmAdapter {
     if (model.wire === 'messages' && !flags.withoutThinking && effort !== undefined && effort !== 'off'
       && rejectsField(raw, THINKING_REFUSED)) {
       flags.withoutThinking = true
-      this.dependencies.warn?.(`dsh-commandcode: ${model.id} refused the thinking fields; retrying without them`)
+      this.dependencies.warn?.(`dsh-provider-commandcode: ${model.id} refused the thinking fields; retrying without them`)
       return true
     }
     if (model.wire === 'chat' && !flags.withoutEffort && effort !== undefined && rejectsField(raw, EFFORT_REFUSED)) {
       flags.withoutEffort = true
-      this.dependencies.warn?.(`dsh-commandcode: ${model.id} refused reasoning_effort; retrying without it`)
+      this.dependencies.warn?.(`dsh-provider-commandcode: ${model.id} refused reasoning_effort; retrying without it`)
       return true
     }
     if (model.wire === 'chat' && !flags.reasoningBack && rejectsField(raw, REASONING_REQUIRED)) {
       flags.reasoningBack = true
-      this.dependencies.warn?.(`dsh-commandcode: ${model.id} requires earlier reasoning back; retrying with it`)
+      this.dependencies.warn?.(`dsh-provider-commandcode: ${model.id} requires earlier reasoning back; retrying with it`)
       return true
     }
     return false

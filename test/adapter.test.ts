@@ -4,6 +4,7 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { CommandCodeAdapter } from '../src/adapter.js'
 import { fallbackCatalog } from '../src/catalog.js'
 import { resolveConnection } from '../src/config.js'
+import type { ResolvedKey } from '../src/credentials.js'
 import type { Connection } from '../src/config.js'
 
 const connection = (): Connection => resolveConnection({}, fallbackCatalog(), '/work/demo')
@@ -52,11 +53,20 @@ const messagesBody = [
   '',
 ].join('\n')
 
-function adapter(overrides: { key?: string | undefined } = {}) {
+function adapter(overrides: { key?: string | undefined; rejectKey?: boolean } = {}) {
   const warnings: string[] = []
+  let current: ResolvedKey | undefined = overrides.key === undefined
+    ? undefined
+    : { key: overrides.key, source: { kind: 'env', name: 'COMMANDCODE_API_KEY' } }
   const instance = new CommandCodeAdapter({
     options: connection,
-    resolveKey: async () => overrides.key === undefined ? undefined : { key: overrides.key ?? 'user_test', source: { kind: 'env', name: 'COMMANDCODE_API_KEY' } },
+    resolveKey: async () => current,
+    ...overrides.rejectKey === false ? {} : {
+      rejectKey: async () => {
+        current = { key: 'user_backup', source: { kind: 'file', path: '/home/me/.pi/agent/auth.json' } }
+        return current
+      },
+    },
     discoverModels: async () => [],
     warn: (message) => warnings.push(message),
   })
@@ -167,6 +177,30 @@ describe('CommandCodeAdapter', () => {
     const retried = JSON.parse(String((fetchImpl.mock.calls[1] as [string, RequestInit])[1].body)) as Record<string, unknown>
     expect(retried).not.toHaveProperty('thinking')
     expect(retried).not.toHaveProperty('output_config')
+  })
+
+  test('retries with the next credential after a 401', async () => {
+    const seen: string[] = []
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      seen.push(String((init?.headers as Record<string, string>)['authorization']))
+      return seen.length === 1
+        ? new Response(JSON.stringify({ error: { message: "Invalid 'Authorization' header or token." } }), { status: 401 })
+        : sse(chatBody)
+    })
+    globalThis.fetch = fetchImpl as unknown as typeof fetch
+    const { instance, warnings } = adapter({ key: 'user_stale' })
+    await expect(collect(instance.stream(request()))).resolves.toBeDefined()
+    expect(seen).toEqual(['Bearer user_stale', 'Bearer user_backup'])
+    expect(warnings[0]).toMatch(/was refused; trying auth file/u)
+  })
+
+  test('reports the 401 when no further credential exists', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: { message: "Invalid 'Authorization' header or token." } }), { status: 401 },
+    ))
+    globalThis.fetch = fetchImpl as unknown as typeof fetch
+    const { instance } = adapter({ key: 'user_only', rejectKey: false })
+    await expect(collect(instance.stream(request()))).rejects.toMatchObject({ code: 'INVALID_CREDENTIAL' })
   })
 
   test('refuses a request with no credential', async () => {

@@ -1,6 +1,6 @@
 /**
  * Deployment configuration and the validated connection facts one request uses.
- * @module dsh-commandcode/config
+ * @module dsh-provider-commandcode/config
  */
 
 import z from '@deepseek-ai/schemastery'
@@ -22,6 +22,8 @@ export type ReasoningBack = 'auto' | 'always' | 'never'
 export interface Config {
   /** Credential reference resolved through the credentials service, then the launch environment. */
   apiKeyEnv?: string
+  /** Whether a refused credential yields to the next configured source. */
+  keyFallback?: boolean
   /**
    * Explicit command-code auth file to read after the credential reference.
    * Omission consults `$COMMANDCODE_AUTH_FILE`, then the CLI's own sign-in and
@@ -81,6 +83,8 @@ const modelOverrideSchema: z<ModelOverride> = z.object({
 export const Config: z<Config> = z.object({
   apiKeyEnv: z.string().default('COMMANDCODE_API_KEY')
     .description('Credential reference (and environment variable) holding the Command Code API key.'),
+  keyFallback: z.boolean().default(true)
+    .description('On a 401, try the next configured credential source instead of failing the request.'),
   authFile: z.string().description('Optional explicit command-code auth.json path.'),
   baseURL: z.string().default(DEFAULT_BASE_URL).description('Command Code Provider API root.'),
   modelsURL: z.string().description('Model listing endpoint; defaults to <baseURL>/models.'),
@@ -142,7 +146,7 @@ export interface Connection {
 
 /** One header value no HTTP field can carry, or a malformed endpoint. */
 function invalid(field: string, detail: string): Error {
-  return new Error(`dsh-commandcode: ${field} ${detail}`)
+  return new Error(`dsh-provider-commandcode: ${field} ${detail}`)
 }
 
 function endpoint(value: string, field: string): string {
@@ -214,7 +218,7 @@ export function resolveConnection(
     maxRequestImageBytes: config.maxRequestImageBytes ?? DEFAULT_MAX_REQUEST_IMAGE_BYTES,
     maxImagesPerRequest: config.maxImagesPerRequest ?? DEFAULT_MAX_IMAGES_PER_REQUEST,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs ?? 180_000,
-    retryPolicy: resolveRetryPolicy(config.retryPolicy, 'dsh-commandcode.retryPolicy'),
+    retryPolicy: resolveRetryPolicy(config.retryPolicy, 'dsh-provider-commandcode.retryPolicy'),
   }
 }
 

@@ -1,6 +1,6 @@
 /**
  * Catalog value types shared by discovery, configuration, and the adapter.
- * @module dsh-commandcode/catalog-types
+ * @module dsh-provider-commandcode/catalog-types
  */
 
 /** Provider API wire that serves one model. */
