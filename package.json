@@ -10,10 +10,12 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "client.js",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -35,6 +37,15 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   },
   "engines": {
@@ -52,7 +63,8 @@
     "@deepseek-ai/dsh-attachment": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-commands": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.19.0"
+    "@deepseek-ai/schemastery": "^3.19.0",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-commands": {
@@ -65,6 +77,7 @@
     "@deepseek-ai/dsh-commands": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-timeout": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.2-rc.1",
     "@deepseek-ai/schemastery": "^3.19.0",
     "@types/node": "^24.9.2",
     "typescript": "^5.9.3",

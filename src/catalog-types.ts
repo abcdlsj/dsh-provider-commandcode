@@ -3,6 +3,8 @@
  * @module dsh-provider-commandcode/catalog-types
  */
 
+import type { PlanId } from './reference-types.js'
+
 /** Provider API wire that serves one model. */
 export type Wire = 'chat' | 'messages'
 
@@ -27,6 +29,9 @@ export interface StaticModel {
   readonly efforts?: readonly string[]
 }
 
+/** Lowest subscription tier that may call one model, when the CLI catalog discloses it. */
+export type { PlanId } from './reference-types.js'
+
 /** One model this adapter serves, after fallback data and configuration are merged. */
 export interface CatalogModel {
   /** Model id accepted by the Provider API. */
@@ -45,6 +50,8 @@ export interface CatalogModel {
   readonly efforts: readonly string[]
   /** Origin of this entry, used by diagnostics. */
   readonly origin: 'live' | 'static' | 'config'
+  /** Lowest plan that includes the model; absent when no source discloses one. */
+  readonly minPlan?: PlanId
 }
 
 /** One model entry a deployment declares or overrides through configuration. */

@@ -11,6 +11,7 @@ import {
   DEFAULT_MAX_TOKENS, DEFAULT_MODELS_TIMEOUT_MS,
 } from './catalog.js'
 import type { CatalogModel, InputModality, ModelOverride, Wire } from './catalog-types.js'
+import type { PlanChoice } from './plan.js'
 
 /** How the Messages wire asks for extended thinking. */
 export type ThinkingMode = 'effort' | 'budget' | 'disabled'
@@ -24,6 +25,17 @@ export interface Config {
   apiKeyEnv?: string
   /** Whether a refused credential yields to the next configured source. */
   keyFallback?: boolean
+  /**
+   * Subscription tier whose models to advertise: `auto` reads the account's
+   * plan, `all` filters nothing, or a fixed `go` / `goat` / `pro` / `max`.
+   */
+  plan?: PlanChoice
+  /** Whether to refresh the official CLI catalog for efforts and plan floors. */
+  referenceCatalog?: boolean
+  /** Whether to expose the account quota reading and its status bar. */
+  quota?: boolean
+  /** Freshness of one refreshed CLI catalog, in milliseconds. */
+  referenceMaxAgeMs?: number
   /**
    * Explicit command-code auth file to read after the credential reference.
    * Omission consults `$COMMANDCODE_AUTH_FILE`, then the CLI's own sign-in and
@@ -85,6 +97,14 @@ export const Config: z<Config> = z.object({
     .description('Credential reference (and environment variable) holding the Command Code API key.'),
   keyFallback: z.boolean().default(true)
     .description('On a 401, try the next configured credential source instead of failing the request.'),
+  plan: z.union([z.const('auto'), z.const('all'), z.const('go'), z.const('goat'), z.const('pro'), z.const('max')])
+    .default('auto').description('Subscription tier whose models to advertise; auto reads the account plan.'),
+  referenceCatalog: z.boolean().default(true)
+    .description('Refresh reasoning efforts and plan floors from the official command-code CLI catalog.'),
+  quota: z.boolean().default(true)
+    .description('Expose the account quota reading for the browser status bar and /commandcode quota.'),
+  referenceMaxAgeMs: z.natural().default(6 * 60 * 60 * 1000)
+    .description('Freshness of one refreshed CLI catalog.'),
   authFile: z.string().description('Optional explicit command-code auth.json path.'),
   baseURL: z.string().default(DEFAULT_BASE_URL).description('Command Code Provider API root.'),
   modelsURL: z.string().description('Model listing endpoint; defaults to <baseURL>/models.'),
@@ -128,6 +148,12 @@ export interface Connection {
   readonly sessionId: string
   /** Whether to send `x-cmd-zdr: 1`. */
   readonly zdr: boolean
+  /** Configured plan choice. */
+  readonly plan: PlanChoice
+  /** Whether to refresh the CLI catalog. */
+  readonly referenceCatalog: boolean
+  /** Freshness of one refreshed CLI catalog. */
+  readonly referenceMaxAgeMs: number
   /** How Claude requests ask for thinking. */
   readonly thinking: ThinkingMode
   /** When earlier reasoning is replayed. */
@@ -207,6 +233,9 @@ export function resolveConnection(
     modelsURL,
     models,
     apiKeyEnv: config.apiKeyEnv ?? 'COMMANDCODE_API_KEY',
+    plan: config.plan ?? 'auto',
+    referenceCatalog: config.referenceCatalog ?? true,
+    referenceMaxAgeMs: config.referenceMaxAgeMs ?? 6 * 60 * 60 * 1000,
     ...config.authFile === undefined ? {} : { authFile: config.authFile },
     cliVersion,
     projectSlug,

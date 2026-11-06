@@ -2,7 +2,9 @@
 
 Command Code ([commandcode.ai](https://commandcode.ai)) provider plugin for **DeepSeek Harness** (`dsh`).
 
-One route (`commandcode`), both Provider API wires: **Claude on the Anthropic Messages wire**, **every other model on Chat Completions**. Live model discovery, the Command Code CLI's own sign-in reused with zero configuration, effort-aware reasoning, tool calls, images, cached-token accounting, and `/commandcode` diagnostics.
+One route (`commandcode`), both Provider API wires: **Claude on the Anthropic Messages wire**, **every other model on Chat Completions**. Live model discovery filtered by your actual plan, the Command Code CLI's own sign-in reused with zero configuration, a **quota status bar in the composer**, effort-aware reasoning, tool calls, images, cached-token accounting, and `/commandcode` diagnostics.
+
+![Command Code quota panel in the dsh composer](docs/quota-bar.png)
 
 Unofficial community plugin. Not affiliated with or endorsed by Command Code or DeepSeek.
 
@@ -53,7 +55,23 @@ Pick `Command Code` in the model picker, or pin it in a profile overlay:
     model: claude-opus-5
 ```
 
-Every live model is served. Claude ids go to `/messages`; everything else goes to `/chat/completions` (including models that also advertise `/responses`). Tool calls, streaming reasoning, images, usage (including cached and reasoning tokens), stop sequences, and `max_tokens` all map onto the wire.
+Every model your plan includes is served. Claude ids go to `/messages`; everything else goes to `/chat/completions` (including models that also advertise `/responses`). Tool calls, streaming reasoning, images, usage (including cached and reasoning tokens), stop sequences, and `max_tokens` all map onto the wire.
+
+### Plan-aware catalog
+
+The plugin reads your subscription (`/alpha/billing/subscriptions`) and the official CLI catalog's `Min plan` column, then lists only the models your tier can call:
+
+| `plan` | Effect |
+| --- | --- |
+| `auto` (default) | Read the account plan. Bought or granted credits make every model reachable. |
+| `go` / `goat` / `pro` / `max` | Pin a tier, without reading the account. |
+| `all` | List everything and let Command Code refuse what it refuses. |
+
+A model above the tier is refused **before any request**, with a message naming both the required and the current plan. If the account cannot be read, the plugin fails open: every model stays listed with a warning in `/commandcode status` — never an empty picker.
+
+### Quota status bar
+
+While the session's selected model belongs to `commandcode`, the composer dock shows a quota pill: `5 hours 11% · Weekly 8%`. Clicking it opens the plan, each rolling window with its used/limit and reset countdown, the month's credits, and a manual refresh. It polls once a minute and on page visibility, and hides itself for every other provider. The browser never holds the API key: the host reads `/alpha/billing/credits` and answers the client's `commandcode/usage` call.
 
 ## Configuration
 
@@ -63,6 +81,10 @@ All fields are optional. Defaults work with no configuration.
 | --- | --- | --- |
 | `apiKeyEnv` | `COMMANDCODE_API_KEY` | Credential reference, also the environment variable name. |
 | `keyFallback` | `true` | On a `401`, retire the refused key and try the next configured source. |
+| `plan` | `auto` | `auto` reads the account plan; a fixed tier filters; `all` lists everything. |
+| `referenceCatalog` | `true` | Refresh reasoning efforts and plan floors from the official CLI catalog. |
+| `referenceMaxAgeMs` | `21600000` | Freshness of one refreshed CLI catalog. |
+| `quota` | `true` | Expose the account quota reading for the status bar and `/commandcode quota`. |
 | `authFile` | — | Explicit command-code `auth.json` path, tried before the defaults. |
 | `baseURL` | `https://api.commandcode.ai/provider/v1` | Provider API root. |
 | `modelsURL` | `<baseURL>/models` | Model listing endpoint. |
@@ -102,17 +124,21 @@ Per-model overrides add a model the listing omits, or correct its capabilities:
 
 `/commandcode` (when the composition mounts the command registry):
 
-- `/commandcode status` — endpoint, catalog source, auth origin (never the key), thinking and replay policy.
-- `/commandcode models [filter]` — served models with wire and context size.
-- `/commandcode refresh` — force one discovery, report the source and any warning.
+- `/commandcode status` — endpoint, catalog and CLI-catalog sources, plan, auth origin (never the key), thinking and replay policy.
+- `/commandcode models [filter]` — models served on the current plan, with the count excluded by it.
+- `/commandcode quota` — plan, rolling windows, monthly credits, reset countdowns.
+- `/commandcode plan` — how the tier was resolved and how many models each tier unlocks.
+- `/commandcode refresh` — force model, CLI-catalog, and plan refreshes, then report the source and any warning.
 
 ## Behaviour worth knowing
 
 - **Degradation is learned, once per process.** If a model refuses `reasoning_effort` (Chat wire) or `thinking`/`output_config` (Messages wire), the plugin retries the same request without that field, logs one warning, and skips the field for that model afterwards. Same for models that demand `reasoning_content` back on every earlier assistant turn.
 - **No thinking replay on Messages.** Thinking blocks are never sent back, because this adapter keeps no signatures — a replayed thinking block without its signature is refused by Anthropic.
-- **Model discovery never fails a prompt.** A failed refresh keeps the last good listing, then the bundled snapshot; the warning surfaces in `/commandcode status`.
+- **Model discovery never fails a prompt.** A failed refresh keeps the last good listing, then the bundled snapshot; the warning surfaces in `/commandcode status`. Plan resolution fails open for the same reason.
+- **Account reads follow the same credential fallback as inference**, so a stale CLI sign-in cannot be why quota or the plan is unreadable.
 - **Errors are stable harness codes.** `401` → `INVALID_CREDENTIAL`, `403 upgrade_required` → `INVALID_CREDENTIAL` with the plan explanation, `403 MODEL_NOT_IN_PLAN` → `PLAN_REQUIRED`, `402`/quota → `QUOTA`, `429` → `RATE_LIMIT` (with `retry-after`), context overflow → `CONTEXT_WINDOW_EXCEEDED`, Google schemas get their JSON pointers inlined.
 - **Images go through the harness attachment service**, are re-encoded once per request, and fail with `IMAGE_OFFLOAD_REQUIRED` instead of being dropped silently when the request exceeds its budget.
+- **The status bar is a client plugin** (`client.js`, loaded through `dsh.client`) that registers into `conversation.composer.dock`; it is inert when the composition has no browser surface.
 - **Every request carries the harness attribution header** (`user-agent: deepseek-harness/…`) plus the CLI's own `x-command-code-version`, `x-cli-environment`, `x-project-slug`, `x-taste-learning`, and `x-session-id`.
 
 ## Design boundaries
@@ -142,12 +168,16 @@ npm test
 npm run build
 ```
 
-Layout: `config.ts` (schema + connection), `catalog.ts` (discovery, fallback, overrides), `credentials.ts`, `adapter.ts` (transport, headers, downgrades), `chat.ts`/`messages.ts` (wire serialization + SSE translation), `sse.ts`, `errors.ts`, `images.ts`, `google-schema.ts`, `static-catalog.ts`.
+Layout: `config.ts` (schema + connection), `catalog.ts` (discovery, fallback, overrides, plan filtering), `reference.ts` (official CLI catalog and its refresh), `account.ts` (plan and credits reads), `plan.ts` (tier resolution), `quota.ts` (status-bar reading), `remote.ts` (the `commandcode/usage` endpoint), `credentials.ts`, `adapter.ts` (transport, headers, downgrades), `chat.ts`/`messages.ts` (wire serialization + SSE translation), `sse.ts`, `errors.ts`, `images.ts`, `google-schema.ts`, `static-catalog.ts`, `static-reference.ts`.
+
+`client.js` is hand-written in the client module system's lazy-CJS factory format (no bundler); `node --check client.js` and `npm test` cover it.
 
 ### What was verified live
 
 - `GET /provider/v1/models` discovery against the real endpoint: 95 models, 11 Claude on Messages, 84 on Chat Completions, 84 image-capable.
 - A full `dsh headless` tool-call round trip on a GOAT plan through Chat Completions (`deepseek/deepseek-v4-flash`, effort `high`): reasoning deltas, a `bash` tool call, its result, and the final answer.
+- The live web client: the boot graph serves `dsh-provider-commandcode/client.js`, the quota pill appears for a `commandcode` session, and the panel renders the real GOAT windows, monthly credits, and reset countdowns — with zero boot exceptions or console errors.
+- Plan filtering on the live account: `gpt-6-sol` (PRO) and `claude-opus-5` (MAX) are refused locally on a GOAT plan before any HTTP request, while GOAT models run.
 - Cross-source credential fallback: a stale `~/.commandcode/auth.json` key yielded to the still-valid `~/.pi/agent/auth.json` key after one `401`, without failing the prompt.
 - The Messages wire is covered by protocol-level tests. A GOAT plan's Provider API allowance excludes Claude (`403 MODEL_NOT_IN_PLAN` comes from Command Code itself), so a live Claude request needs a Provider-or-higher key.
 

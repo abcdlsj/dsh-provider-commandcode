@@ -9,8 +9,14 @@ built `lib/` and a `cordis.patch.yml` bundle layer.
   `docs/cookbook/adding-an-llm-adapter.md` in deepseek-harness before changing
   chunk ordering, usage placement, or error codes.
 - Wire translation stays in `chat.ts` and `messages.ts`; transport, headers, and
-  learned downgrades stay in `adapter.ts`; capability data stays in `catalog.ts`
-  and `static-catalog.ts`.
+  learned downgrades stay in `adapter.ts`; capability data stays in `catalog.ts`,
+  `reference.ts`, `static-catalog.ts`, and `static-reference.ts`.
+- Plan filtering (`plan.ts`), account reads (`account.ts`), and the quota
+  reading (`quota.ts`) never fail a model request: they fail open with a
+  warning that the `/commandcode` status report shows.
+- The browser half is `client.js` in the client module system's lazy-CJS factory
+  format. Keep it dependency-free apart from the shared module table, and run
+  `node --check client.js` after editing.
 - Never print a credential. Diagnostics name the source, not the value.
 - `npm run typecheck && npm test` must pass before a commit; `npm run build`
   must produce a loadable `lib/`.

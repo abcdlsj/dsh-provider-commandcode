@@ -53,7 +53,7 @@ const messagesBody = [
   '',
 ].join('\n')
 
-function adapter(overrides: { key?: string | undefined; rejectKey?: boolean } = {}) {
+function adapter(overrides: { key?: string | undefined; rejectKey?: boolean; plan?: 'all' | 'go' } = {}) {
   const warnings: string[] = []
   let current: ResolvedKey | undefined = overrides.key === undefined
     ? undefined
@@ -68,6 +68,9 @@ function adapter(overrides: { key?: string | undefined; rejectKey?: boolean } = 
       },
     },
     discoverModels: async () => [],
+    ...overrides.plan === undefined ? {} : {
+      resolvePlan: async () => ({ plan: overrides.plan ?? 'all', source: 'config' as const, unrestricted: false }),
+    },
     warn: (message) => warnings.push(message),
   })
   return { instance, warnings }
@@ -201,6 +204,17 @@ describe('CommandCodeAdapter', () => {
     globalThis.fetch = fetchImpl as unknown as typeof fetch
     const { instance } = adapter({ key: 'user_only', rejectKey: false })
     await expect(collect(instance.stream(request()))).rejects.toMatchObject({ code: 'INVALID_CREDENTIAL' })
+  })
+
+  test('refuses a model above the account plan before any request', async () => {
+    const fetchImpl = vi.fn()
+    globalThis.fetch = fetchImpl as unknown as typeof fetch
+    const { instance } = adapter({ key: 'user_abc', plan: 'go' })
+    await expect(collect(instance.stream(request({ model: 'claude-opus-5' })))).rejects.toMatchObject({
+      code: 'PLAN_REQUIRED',
+      message: expect.stringMatching(/needs the MAX plan or above/u),
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   test('refuses a request with no credential', async () => {

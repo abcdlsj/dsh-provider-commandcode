@@ -11,7 +11,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import { modelById } from './catalog.js'
+import { modelAllowed, modelById } from './catalog.js'
 import type { CatalogModel } from './catalog-types.js'
 import { buildChatRequest, translateChat } from './chat.js'
 import type { Connection } from './config.js'
@@ -20,6 +20,7 @@ import { describeSource } from './credentials.js'
 import { emptyResponse, providerError, rejectsField, transportError } from './errors.js'
 import { prepareImages } from './images.js'
 import { buildMessagesRequest, translateMessages } from './messages.js'
+import type { PlanResolution } from './plan.js'
 import { parseSse } from './sse.js'
 
 /** Idle-watchdog timeout code of one stream read. */
@@ -51,6 +52,8 @@ export interface CommandCodeAdapterOptions {
   readonly rejectKey?: (connection: Connection, key: string) => Promise<ResolvedKey | undefined>
   /** Discover catalog entries; a missing key still lets the public listing answer. */
   readonly discoverModels: (connection: Connection, signal?: AbortSignal) => Promise<readonly LlmModelInfo[]>
+  /** Resolve the plan this request may use; omission admits every model. */
+  readonly resolvePlan?: () => Promise<PlanResolution>
   /** Current durable attachment service; absence rejects image input. */
   readonly resolveAttachments?: () => AttachmentStore | undefined
   /** Bridge one attachment reference into the current tool execution world. */
@@ -217,6 +220,14 @@ export class CommandCodeAdapter extends LlmAdapter {
   ): AsyncGenerator<StreamChunk> {
     signal.throwIfAborted()
     const model = served(connection, options.model)
+    const plan = await this.dependencies.resolvePlan?.()
+    if (plan !== undefined && !modelAllowed(model, plan.plan, plan.unrestricted)) {
+      throw new LlmError(
+        `Command Code model "${model.id}" needs the ${model.minPlan?.toUpperCase()} plan or above;`
+        + ` the current plan is ${plan.planName ?? plan.plan}.`,
+        'PLAN_REQUIRED',
+      )
+    }
     const prepared = await prepareImages({
       messages: options.messages,
       model,

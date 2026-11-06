@@ -5,6 +5,8 @@
  */
 
 import { STATIC_MODELS } from './static-catalog.js'
+import { STATIC_REFERENCE_INDEX, planCovers } from './reference.js'
+import type { PlanId, ReferenceModel } from './reference-types.js'
 import type { CatalogModel, InputModality, ModelOverride, StaticModel, Wire } from './catalog-types.js'
 
 /** Default endpoint of Command Code's Provider API. */
@@ -167,7 +169,11 @@ export function parseListing(raw: unknown): ParsedListing {
  * @param overrides - deployment-declared models and field overrides.
  * @returns model entries the adapter serves, with live order first.
  */
-export function buildCatalog(entries: readonly ListEntry[], overrides: readonly ModelOverride[] = []): CatalogModel[] {
+export function buildCatalog(
+  entries: readonly ListEntry[],
+  overrides: readonly ModelOverride[] = [],
+  reference: ReadonlyMap<string, ReferenceModel> = STATIC_REFERENCE_INDEX,
+): CatalogModel[] {
   const overrideById = new Map(overrides.map((override) => [override.id, override]))
   const result: CatalogModel[] = []
   const seen = new Set<string>()
@@ -175,15 +181,22 @@ export function buildCatalog(entries: readonly ListEntry[], overrides: readonly 
     seen.add(entry.id)
     const known = CAPABILITIES.get(entry.id)
     const override = overrideById.get(entry.id)
+    const referenceModel = reference.get(entry.id)
     result.push({
       id: entry.id,
-      name: override?.name ?? entry.name,
+      name: override?.name ?? entry.name ?? referenceModel?.name,
       wire: override?.wire ?? known?.wire ?? wireFor(entry.id, entry.endpoints),
-      contextWindow: override?.contextWindow ?? entry.contextWindow ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      contextWindow: override?.contextWindow ?? entry.contextWindow ?? referenceModel?.contextWindow
+        ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       inputModalities: override?.inputModalities ?? known?.inputModalities ?? heuristicModalities(entry.id),
       maxTokens: override?.maxTokens ?? known?.maxTokens ?? DEFAULT_MAX_TOKENS,
-      efforts: override?.efforts ?? known?.efforts ?? heuristicEfforts(entry.id),
+      // The CLI catalog is the authority on selectable efforts; the bundled
+      // manifest only stands in for a model it does not describe.
+      efforts: override?.efforts
+        ?? (referenceModel !== undefined && referenceModel.efforts.length > 0 ? referenceModel.efforts : undefined)
+        ?? known?.efforts ?? heuristicEfforts(entry.id),
       origin: 'live',
+      ...referenceModel?.minPlan === undefined ? {} : { minPlan: referenceModel.minPlan },
     })
   }
   // A live listing is authoritative about what exists, so a model it omits is
@@ -192,25 +205,50 @@ export function buildCatalog(entries: readonly ListEntry[], overrides: readonly 
     if (seen.has(override.id)) continue
     seen.add(override.id)
     const known = CAPABILITIES.get(override.id)
+    const referenceModel = reference.get(override.id)
     result.push({
       id: override.id,
-      name: override.name ?? known?.name ?? override.id,
+      name: override.name ?? referenceModel?.name ?? known?.name ?? override.id,
       wire: override.wire ?? known?.wire ?? wireFor(override.id, undefined),
-      contextWindow: override.contextWindow ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      contextWindow: override.contextWindow ?? referenceModel?.contextWindow ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       inputModalities: override.inputModalities ?? known?.inputModalities ?? heuristicModalities(override.id),
       maxTokens: override.maxTokens ?? known?.maxTokens ?? DEFAULT_MAX_TOKENS,
-      efforts: override.efforts ?? known?.efforts ?? heuristicEfforts(override.id),
+      efforts: override.efforts
+        ?? (referenceModel !== undefined && referenceModel.efforts.length > 0 ? referenceModel.efforts : undefined)
+        ?? known?.efforts ?? heuristicEfforts(override.id),
       origin: 'config',
+      ...referenceModel?.minPlan === undefined ? {} : { minPlan: referenceModel.minPlan },
     })
   }
   return result
 }
 
 /** The catalog served before any discovery has succeeded. */
-export function fallbackCatalog(overrides: readonly ModelOverride[] = []): CatalogModel[] {
-  return buildCatalog([], overrides).concat(
-    FALLBACK_MODELS.filter((model) => !overrides.some((override) => override.id === model.id)),
+export function fallbackCatalog(
+  overrides: readonly ModelOverride[] = [],
+  reference: ReadonlyMap<string, ReferenceModel> = STATIC_REFERENCE_INDEX,
+): CatalogModel[] {
+  return buildCatalog([], overrides, reference).concat(
+    FALLBACK_MODELS
+      .filter((model) => !overrides.some((override) => override.id === model.id))
+      .map((model) => mergeReference(model, reference.get(model.id), undefined)),
   )
+}
+
+/** Fold the CLI catalog's name, context, efforts, and plan floor into one entry. */
+function mergeReference(
+  model: CatalogModel,
+  reference: ReferenceModel | undefined,
+  override: ModelOverride | undefined,
+): CatalogModel {
+  if (reference === undefined) return model
+  return {
+    ...model,
+    name: override?.name ?? model.name,
+    contextWindow: override?.contextWindow ?? model.contextWindow ?? reference.contextWindow ?? model.contextWindow,
+    efforts: override?.efforts ?? (reference.efforts.length > 0 ? reference.efforts : model.efforts),
+    ...reference.minPlan === undefined ? {} : { minPlan: reference.minPlan },
+  }
 }
 
 /** Resolve the served entry for one model, falling back to the capabilities the id implies. */
@@ -218,17 +256,39 @@ export function modelById(models: readonly CatalogModel[], id: string): CatalogM
   const found = models.find((model) => model.id === id)
   if (found !== undefined) return found
   const known = CAPABILITIES.get(id)
-  if (known !== undefined) return materialize(known, 'static')
-  return {
-    id,
-    name: id,
-    wire: wireFor(id, undefined),
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    inputModalities: heuristicModalities(id),
-    maxTokens: DEFAULT_MAX_TOKENS,
-    efforts: heuristicEfforts(id),
-    origin: 'static',
-  }
+  const base = known !== undefined
+    ? materialize(known, 'static')
+    : {
+      id,
+      name: id,
+      wire: wireFor(id, undefined),
+      contextWindow: DEFAULT_CONTEXT_WINDOW,
+      inputModalities: heuristicModalities(id),
+      maxTokens: DEFAULT_MAX_TOKENS,
+      efforts: heuristicEfforts(id),
+      origin: 'static' as const,
+    }
+  return mergeReference(base, STATIC_REFERENCE_INDEX.get(id), undefined)
+}
+
+/** Whether one plan may call a model. */
+export function modelAllowed(
+  model: CatalogModel,
+  plan: PlanId | 'all',
+  unrestrictedByCredits = false,
+): boolean {
+  if (plan === 'all' || unrestrictedByCredits) return true
+  if (model.minPlan === undefined) return true
+  return planCovers(plan, model.minPlan)
+}
+
+/** The entries one plan may call, in served order. */
+export function visibleCatalog(
+  models: readonly CatalogModel[],
+  plan: PlanId | 'all',
+  unrestrictedByCredits = false,
+): CatalogModel[] {
+  return models.filter((model) => modelAllowed(model, plan, unrestrictedByCredits))
 }
 
 /** One discovery result: the entries plus how many the endpoint returned unusable. */
