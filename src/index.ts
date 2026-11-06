@@ -96,31 +96,6 @@ interface PluginState {
 export function apply(ctx: Context, config: Config): void {
   const overrides = (config.models ?? []) as readonly ModelOverride[]
   const lifecycle = new AbortController()
-  const cache = new CatalogCache({
-    maxAgeMs: config.modelsMaxAgeMs ?? 5 * 60_000,
-    build: (entries) => buildCatalog(entries, overrides),
-    fallback: () => fallbackCatalog(overrides),
-    warn: DISCOVERY_WARN,
-    load: async (signal) => {
-      const connection = options()
-      const key = config.discovery === false
-        ? undefined
-        : await resolveApiKey({
-          ref: connection.apiKeyEnv,
-          ...connection.authFile === undefined ? {} : { authFile: connection.authFile },
-          credentials: credentials(ctx),
-          env: process.env,
-          home: homedir(),
-        })
-      return await fetchModels({
-        url: connection.modelsURL,
-        apiKey: key?.key,
-        signal: AbortSignal.any([signal, lifecycle.signal]),
-        timeoutMs: config.modelsTimeoutMs ?? 10_000,
-        headers: { 'x-command-code-version': connection.cliVersion },
-      })
-    },
-  })
   const options = (): Connection => {
     const models = config.discovery === false ? fallbackCatalog(overrides) : cache.current().models
     return resolveConnection(config, models, process.cwd())
@@ -133,6 +108,25 @@ export function apply(ctx: Context, config: Config): void {
     home: homedir(),
   })
   const keys = new KeySelector(keySources)
+  const cache = new CatalogCache({
+    maxAgeMs: config.modelsMaxAgeMs ?? 5 * 60_000,
+    build: (entries) => buildCatalog(entries, overrides),
+    fallback: () => fallbackCatalog(overrides),
+    warn: DISCOVERY_WARN,
+    load: async (signal) => {
+      const connection = options()
+      // Discovery also answers anonymously; a key only makes the listing
+      // account-scoped when one is already resolvable.
+      const key = config.discovery === false ? undefined : await keys.resolve(connection)
+      return await fetchModels({
+        url: connection.modelsURL,
+        apiKey: key?.key,
+        signal: AbortSignal.any([signal, lifecycle.signal]),
+        timeoutMs: config.modelsTimeoutMs ?? 10_000,
+        headers: { 'x-command-code-version': connection.cliVersion },
+      })
+    },
+  })
   const listing = async (signal?: AbortSignal): Promise<readonly CatalogModel[]> => {
     if (config.discovery === false) return fallbackCatalog(overrides)
     return (await cache.view(signal)).models
